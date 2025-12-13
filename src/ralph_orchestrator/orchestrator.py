@@ -3,26 +3,23 @@
 
 """Core orchestration loop for Ralph Orchestrator."""
 
-import os
-import sys
 import time
 import signal
 import logging
-import subprocess
 import asyncio
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
-from dataclasses import dataclass, field
+from typing import Dict, Any
 import json
 from datetime import datetime
 
-from .adapters.base import ToolAdapter, ToolResponse
+from .adapters.base import ToolAdapter
 from .adapters.claude import ClaudeAdapter
 from .adapters.qchat import QChatAdapter
 from .adapters.gemini import GeminiAdapter
 from .metrics import Metrics, CostTracker
 from .safety import SafetyGuard
 from .context import ContextManager
+from .output import RalphConsole
 
 # Setup logging
 logging.basicConfig(
@@ -65,6 +62,7 @@ class RalphOrchestrator:
             # It's a config object
             config = prompt_file_or_config
             self.prompt_file = Path(config.prompt_file)
+            self.prompt_text = getattr(config, 'prompt_text', None)
             self.primary_tool = config.agent.value if hasattr(config.agent, 'value') else str(config.agent)
             self.max_iterations = config.max_iterations
             self.max_runtime = config.max_runtime
@@ -76,6 +74,7 @@ class RalphOrchestrator:
         else:
             # Individual parameters
             self.prompt_file = Path(prompt_file_or_config if prompt_file_or_config else "PROMPT.md")
+            self.prompt_text = None
             self.primary_tool = primary_tool
             self.max_iterations = max_iterations
             self.max_runtime = max_runtime
@@ -89,7 +88,8 @@ class RalphOrchestrator:
         self.metrics = Metrics()
         self.cost_tracker = CostTracker() if track_costs else None
         self.safety_guard = SafetyGuard(max_iterations, max_runtime, max_cost)
-        self.context_manager = ContextManager(self.prompt_file)
+        self.context_manager = ContextManager(self.prompt_file, prompt_text=self.prompt_text)
+        self.console = RalphConsole()  # Enhanced console output
         
         # Initialize adapters
         self.adapters = self._initialize_adapters()
@@ -98,11 +98,14 @@ class RalphOrchestrator:
         if not self.current_adapter:
             raise ValueError(f"Unknown tool: {primary_tool}")
         
-        # Signal handling
+        # Signal handling - use basic signal registration here
+        # The async handlers will be set up when arun() is called
         self.stop_requested = False
+        self._running_task = None  # Track the current async task for cancellation
+        self._async_logger = None  # Will hold optional AsyncFileLogger for emergency shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
-        
+
         # Task queue tracking
         self.task_queue = []  # List of pending tasks extracted from prompt
         self.current_task = None  # Currently executing task
@@ -153,9 +156,58 @@ class RalphOrchestrator:
         return adapters
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
+        """Handle shutdown signals with subprocess-first cleanup.
+
+        This handler follows a critical shutdown sequence:
+        1. Kill subprocess FIRST (synchronous, signal-safe) - unblocks I/O
+        2. Set emergency shutdown on logger (prevents blocking log writes)
+        3. Set stop flag and cancel async task
+        4. Schedule async emergency cleanup
+        """
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+
+        # CRITICAL: Kill subprocess FIRST (synchronous, signal-safe)
+        # This unblocks any I/O operations waiting on subprocess
+        if hasattr(self.current_adapter, 'kill_subprocess_sync'):
+            self.current_adapter.kill_subprocess_sync()
+
+        # Force emergency shutdown on async logger if present
+        if self._async_logger is not None:
+            self._async_logger.emergency_shutdown()
+
+        # Set stop flag
         self.stop_requested = True
+
+        # Cancel running async task if present
+        if self._running_task and not self._running_task.done():
+            self._running_task.cancel()
+
+        # Schedule emergency cleanup on the event loop (if available)
+        try:
+            asyncio.get_running_loop()
+            asyncio.create_task(self._emergency_cleanup())
+        except RuntimeError:
+            # No running event loop - sync cleanup handled by finally blocks
+            pass
+
+    async def _emergency_cleanup(self) -> None:
+        """Emergency cleanup scheduled from signal handler.
+
+        This method handles any remaining async cleanup that needs to happen
+        after the signal handler has done its synchronous cleanup.
+        """
+        try:
+            # Clean up adapter transport if available
+            if hasattr(self.current_adapter, '_cleanup_transport'):
+                try:
+                    await asyncio.wait_for(
+                        self.current_adapter._cleanup_transport(),
+                        timeout=0.5
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug("Cleanup transport timed out during emergency shutdown")
+        except Exception as e:
+            logger.debug(f"Error during emergency cleanup (ignored): {type(e).__name__}: {e}")
     
     def run(self) -> None:
         """Run the main orchestration loop."""
@@ -167,12 +219,56 @@ class RalphOrchestrator:
             loop = asyncio.get_event_loop()
             loop.run_until_complete(self.arun())
     
+    def set_async_logger(self, async_logger) -> None:
+        """Set the AsyncFileLogger for emergency shutdown during signal handling.
+
+        Args:
+            async_logger: An AsyncFileLogger instance with emergency_shutdown() method
+        """
+        self._async_logger = async_logger
+
+    def _setup_async_signal_handlers(self) -> None:
+        """Set up async signal handlers for graceful shutdown in event loop context."""
+        try:
+            loop = asyncio.get_running_loop()
+
+            def async_signal_handler(signum: int) -> None:
+                """Handle shutdown signals in async context."""
+                logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+
+                # CRITICAL: Kill subprocess FIRST (synchronous, signal-safe)
+                if hasattr(self.current_adapter, 'kill_subprocess_sync'):
+                    self.current_adapter.kill_subprocess_sync()
+
+                # Force emergency shutdown on async logger if present
+                if self._async_logger is not None:
+                    self._async_logger.emergency_shutdown()
+
+                # Set stop flag and cancel running task
+                self.stop_requested = True
+                if self._running_task and not self._running_task.done():
+                    self._running_task.cancel()
+
+                # Schedule emergency cleanup
+                asyncio.create_task(self._emergency_cleanup())
+
+            # Register handlers with event loop for proper async handling
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, lambda s=sig: async_signal_handler(s))
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler, fall back to basic handling
+            pass
+
     async def arun(self) -> None:
         """Run the main orchestration loop asynchronously."""
         logger.info("Starting Ralph orchestration loop")
+
+        # Set up async signal handlers now that we have a running loop
+        self._setup_async_signal_handlers()
+
         start_time = time.time()
         self._start_time = start_time  # Store for state retrieval
-        
+
         while not self.stop_requested:
             # Check safety limits
             safety_check = self.safety_guard.check(
@@ -182,31 +278,42 @@ class RalphOrchestrator:
             )
             
             if not safety_check.passed:
-                logger.warning(f"Safety limit reached: {safety_check.reason}")
+                logger.info(f"Safety limit reached: {safety_check.reason}")
                 break
             
             # No longer checking for task completion - run until limits
             
             # Execute iteration
             self.metrics.iterations += 1
+            self.console.print_iteration_header(self.metrics.iterations)
             logger.info(f"Starting iteration {self.metrics.iterations}")
             
             try:
                 success = await self._aexecute_iteration()
-                
+
                 if success:
                     self.metrics.successful_iterations += 1
+                    self.console.print_success(
+                        f"Iteration {self.metrics.iterations} completed successfully"
+                    )
                 else:
                     self.metrics.failed_iterations += 1
-                    self._handle_failure()
-                
+                    self.console.print_warning(
+                        f"Iteration {self.metrics.iterations} failed"
+                    )
+                    await self._handle_failure()
+
                 # Checkpoint if needed
                 if self.metrics.iterations % self.checkpoint_interval == 0:
-                    self._create_checkpoint()
-                
+                    await self._create_checkpoint()
+                    self.console.print_info(
+                        f"Checkpoint {self.metrics.checkpoints} created"
+                    )
+
             except Exception as e:
-                logger.error(f"Error in iteration: {e}")
+                logger.warning(f"Error in iteration: {e}")
                 self.metrics.errors += 1
+                self.console.print_error(f"Error in iteration: {e}")
                 self._handle_error(e)
             
             # Brief pause between iterations
@@ -297,60 +404,77 @@ class RalphOrchestrator:
         # Rough estimate: 1 token per 4 characters
         return len(text) // 4
     
-    def _handle_failure(self):
-        """Handle iteration failure."""
+    async def _handle_failure(self):
+        """Handle iteration failure asynchronously."""
         logger.warning("Iteration failed, attempting recovery")
-        
-        # Simple exponential backoff
+
+        # Simple exponential backoff (non-blocking)
         backoff = min(2 ** self.metrics.failed_iterations, 60)
-        logger.info(f"Backing off for {backoff} seconds")
-        time.sleep(backoff)
-        
+        logger.debug(f"Backing off for {backoff} seconds")
+        await asyncio.sleep(backoff)
+
         # Consider rollback after multiple failures
         if self.metrics.failed_iterations > 3:
-            self._rollback_checkpoint()
+            await self._rollback_checkpoint()
     
     def _handle_error(self, error: Exception):
         """Handle iteration error."""
-        logger.error(f"Handling error: {error}")
+        logger.warning(f"Handling error: {error}")
         
         # Archive current prompt
         self._archive_prompt()
         
         # Reset if too many errors
         if self.metrics.errors > 5:
-            logger.warning("Too many errors, resetting state")
+            logger.info("Too many errors, resetting state")
             self._reset_state()
     
-    def _create_checkpoint(self):
-        """Create a git checkpoint."""
+    async def _create_checkpoint(self):
+        """Create a git checkpoint asynchronously."""
         try:
-            subprocess.run(
-                ["git", "add", "-A"],
-                check=True,
-                capture_output=True
+            # Stage all changes
+            proc = await asyncio.create_subprocess_exec(
+                "git", "add", "-A",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
-            subprocess.run(
-                ["git", "commit", "-m", f"Ralph checkpoint {self.metrics.iterations}"],
-                check=True,
-                capture_output=True
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(f"Failed to stage changes: {stderr.decode()}")
+                return
+
+            # Commit
+            proc = await asyncio.create_subprocess_exec(
+                "git", "commit", "-m", f"Ralph checkpoint {self.metrics.iterations}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(f"Failed to create checkpoint: {stderr.decode()}")
+                return
+
             self.metrics.checkpoints += 1
-            logger.info(f"Created checkpoint {self.metrics.checkpoints}")
-        except subprocess.CalledProcessError as e:
+            logger.debug(f"Created checkpoint {self.metrics.checkpoints}")
+        except Exception as e:
             logger.warning(f"Failed to create checkpoint: {e}")
     
-    def _rollback_checkpoint(self):
-        """Rollback to previous checkpoint."""
+    async def _rollback_checkpoint(self):
+        """Rollback to previous checkpoint asynchronously."""
         try:
-            subprocess.run(
-                ["git", "reset", "--hard", "HEAD~1"],
-                check=True,
-                capture_output=True
+            proc = await asyncio.create_subprocess_exec(
+                "git", "reset", "--hard", "HEAD~1",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
-            logger.info("Rolled back to previous checkpoint")
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error(f"Failed to rollback: {stderr.decode()}")
+                return
+
+            logger.debug("Rolled back to previous checkpoint")
             self.metrics.rollbacks += 1
-        except subprocess.CalledProcessError as e:
+        except Exception as e:
             logger.error(f"Failed to rollback: {e}")
     
     def _archive_prompt(self):
@@ -376,23 +500,30 @@ class RalphOrchestrator:
         self.context_manager.reset()
     
     def _print_summary(self):
-        """Print execution summary."""
-        logger.info("=" * 50)
-        logger.info("Ralph Orchestration Summary")
-        logger.info("=" * 50)
-        logger.info(f"Total iterations: {self.metrics.iterations}")
-        logger.info(f"Successful: {self.metrics.successful_iterations}")
-        logger.info(f"Failed: {self.metrics.failed_iterations}")
-        logger.info(f"Errors: {self.metrics.errors}")
-        logger.info(f"Checkpoints: {self.metrics.checkpoints}")
-        logger.info(f"Rollbacks: {self.metrics.rollbacks}")
-        
+        """Print execution summary with enhanced console output."""
+        # Use RalphConsole for enhanced summary display
+        self.console.print_header("Ralph Orchestration Summary")
+
+        # Print stats using RalphConsole
+        self.console.print_stats(
+            iteration=self.metrics.iterations,
+            success_count=self.metrics.successful_iterations,
+            error_count=self.metrics.failed_iterations,
+            start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            prompt_file=str(self.prompt_file),
+            recent_lines=[
+                f"Checkpoints: {self.metrics.checkpoints}",
+                f"Rollbacks: {self.metrics.rollbacks}",
+                f"Errors: {self.metrics.errors}",
+            ],
+        )
+
         if self.cost_tracker:
-            logger.info(f"Total cost: ${self.cost_tracker.total_cost:.4f}")
-            logger.info("Cost breakdown:")
+            self.console.print_info(f"Total cost: ${self.cost_tracker.total_cost:.4f}")
+            self.console.print_info("Cost breakdown:")
             for tool, cost in self.cost_tracker.costs_by_tool.items():
-                logger.info(f"  {tool}: ${cost:.4f}")
-        
+                self.console.print_info(f"  {tool}: ${cost:.4f}")
+
         # Save metrics to file
         metrics_dir = Path(".agent") / "metrics"
         metrics_dir.mkdir(parents=True, exist_ok=True)
@@ -405,15 +536,15 @@ class RalphOrchestrator:
             "checkpoints": self.metrics.checkpoints,
             "rollbacks": self.metrics.rollbacks,
         }
-        
+
         if self.cost_tracker:
             metrics_data["cost"] = {
                 "total": self.cost_tracker.total_cost,
                 "by_tool": self.cost_tracker.costs_by_tool
             }
-        
+
         metrics_file.write_text(json.dumps(metrics_data, indent=2))
-        logger.info(f"Metrics saved to {metrics_file}")
+        self.console.print_success(f"Metrics saved to {metrics_file}")
     
     def _extract_tasks_from_prompt(self, prompt: str):
         """Extract tasks from the prompt text."""

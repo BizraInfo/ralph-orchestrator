@@ -37,6 +37,7 @@ env/
 # Ralph specific
 .ralph/
 .agent/
+.logs/
 prompts/
 prompts/archive/
 ralph_*.log
@@ -53,3 +54,4 @@ docs/_build/site/
 site/
 
 .worktrees
+PROMPT.md

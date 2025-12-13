@@ -102,9 +102,10 @@ class TestClaudeAdapter(unittest.TestCase):
             allowed_tools=["Read", "Write"],
             disallowed_tools=["Bash"]
         )
-        
+
         self.assertEqual(adapter._system_prompt, "Test system prompt")
-        self.assertEqual(adapter._allowed_tools, ["Read", "Write"])
+        # Note: WebSearch is added by default when enable_web_search=True (default)
+        self.assertEqual(adapter._allowed_tools, ["Read", "Write", "WebSearch"])
         self.assertEqual(adapter._disallowed_tools, ["Bash"])
 
 
@@ -239,25 +240,56 @@ class TestAsyncClaudeAdapter(unittest.IsolatedAsyncioTestCase):
     @patch('ralph_orchestrator.adapters.claude.query')
     async def test_aexecute_with_tokens(self, mock_query):
         """Test async execution with token counting."""
-        # Mock message with token usage
-        class MockMessage:
+        # Mock TextBlock for content - the adapter checks hasattr(content_block, 'text')
+        class TextBlock:
             def __init__(self):
                 self.text = "Response with tokens"
+
+        # Mock AssistantMessage - type().__name__ must be 'AssistantMessage'
+        class AssistantMessage:
+            def __init__(self):
+                self.content = [TextBlock()]
+
+        # Mock ResultMessage with usage stats - this is where tokens come from
+        class ResultMessage:
+            def __init__(self):
+                self.result = "Response with tokens"
                 self.usage = MagicMock()
                 self.usage.total_tokens = 100
-        
+
         async def mock_async_gen():
-            yield MockMessage()
-        
+            # AssistantMessage first with content, then ResultMessage with usage
+            yield AssistantMessage()
+            yield ResultMessage()
+
         mock_query.return_value = mock_async_gen()
-        
+
         adapter = ClaudeAdapter()
         response = await adapter.aexecute("Test prompt")
-        
+
         self.assertTrue(response.success)
         self.assertEqual(response.output, "Response with tokens")
         self.assertEqual(response.tokens_used, 100)
         self.assertIsNotNone(response.cost)
+
+    @patch('ralph_orchestrator.adapters.claude.CLAUDE_SDK_AVAILABLE', True)
+    @patch('ralph_orchestrator.adapters.claude.query')
+    async def test_aexecute_sigint_cancellation(self, mock_query):
+        """Test that SIGINT cancellation is handled gracefully without error logging."""
+        async def mock_async_gen():
+            # Yield nothing then raise - simulates SIGINT during execution
+            if False:
+                yield  # Make this an async generator
+            raise Exception("Command failed with exit code -2 (exit code: -2)")
+
+        mock_query.return_value = mock_async_gen()
+
+        adapter = ClaudeAdapter()
+        response = await adapter.aexecute("Test prompt")
+
+        self.assertFalse(response.success)
+        self.assertEqual(response.error, "Execution cancelled by user")
+        self.assertEqual(response.output, "")
 
 
 if __name__ == "__main__":

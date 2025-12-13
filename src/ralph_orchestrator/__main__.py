@@ -23,24 +23,29 @@ from .main import (
     DEFAULT_MAX_COST, DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_THRESHOLD,
     DEFAULT_METRICS_INTERVAL, DEFAULT_MAX_PROMPT_SIZE
 )
+from .output import RalphConsole
+
+# Global console instance for CLI output
+_console = RalphConsole()
 
 
 def init_project():
     """Initialize a new Ralph project."""
-    print("Initializing Ralph project...")
-    
+    _console.print_status("Initializing Ralph project...")
+
     # Create directories
     dirs = [
         ".agent/prompts",
-        ".agent/checkpoints", 
+        ".agent/checkpoints",
         ".agent/metrics",
         ".agent/plans",
-        ".agent/memory"
+        ".agent/memory",
+        ".agent/cache"
     ]
-    
+
     for dir_path in dirs:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
-    
+
     # Create default PROMPT.md if it doesn't exist
     if not Path("PROMPT.md").exists():
         with open("PROMPT.md", "w") as f:
@@ -55,7 +60,7 @@ def init_project():
 - Tests pass
 - Code is clean
 """)
-        print("Created PROMPT.md template")
+        _console.print_success("Created PROMPT.md template")
     
     # Create default ralph.yml if it doesn't exist
     if not Path("ralph.yml").exists():
@@ -79,85 +84,88 @@ adapters:
     enabled: true
     timeout: 300
 """)
-        print("Created ralph.yml configuration")
-    
+        _console.print_success("Created ralph.yml configuration")
+
     # Initialize git if not already
     if not Path(".git").exists():
         subprocess.run(["git", "init"], capture_output=True)
-        print("Initialized git repository")
-    
-    print("Ralph project initialized!")
-    print("Edit ralph.yml to customize configuration")
-    print("Edit PROMPT.md to define your task")
+        _console.print_info("Initialized git repository")
+
+    _console.print_success("Ralph project initialized!")
+    _console.print_info("Edit ralph.yml to customize configuration")
+    _console.print_info("Edit PROMPT.md to define your task")
 
 
 def show_status():
     """Show current Ralph project status."""
-    print("Ralph Orchestrator Status")
-    print("=" * 25)
-    
+    _console.print_header("Ralph Orchestrator Status")
+
     # Check for PROMPT.md
     if Path("PROMPT.md").exists():
-        print("Prompt: PROMPT.md exists")
-        print("Status: IN PROGRESS")
+        _console.print_success("Prompt: PROMPT.md exists")
+        _console.print_info("Status: IN PROGRESS")
     else:
-        print("Prompt: PROMPT.md not found")
-    
+        _console.print_warning("Prompt: PROMPT.md not found")
+
     # Check iterations from metrics
     metrics_dir = Path(".agent/metrics")
     if metrics_dir.exists():
         state_files = sorted(metrics_dir.glob("state_*.json"))
         if state_files:
             latest_state = state_files[-1]
-            print(f"\nLatest metrics: {latest_state.name}")
+            _console.print_info(f"Latest metrics: {latest_state.name}")
             try:
                 with open(latest_state, "r") as f:
                     data = json.load(f)
-                    print(f"  Iterations: {data.get('iteration_count', 0)}")
-                    print(f"  Runtime: {data.get('runtime', 0):.1f}s")
-                    print(f"  Errors: {len(data.get('errors', []))}")
-            except Exception:
-                pass
-    
+                    _console.print_info(f"  Iterations: {data.get('iteration_count', 0)}")
+                    _console.print_info(f"  Runtime: {data.get('runtime', 0):.1f}s")
+                    _console.print_info(f"  Errors: {len(data.get('errors', []))}")
+            except json.JSONDecodeError:
+                _console.print_warning(f"  Warning: Metrics file {latest_state.name} is corrupted")
+            except PermissionError:
+                _console.print_warning(f"  Warning: No permission to read {latest_state.name}")
+            except Exception as e:
+                _console.print_warning(f"  Warning: Could not read metrics - {e}")
+
     # Check git status
     if Path(".git").exists():
-        print("\nGit checkpoints:")
+        _console.print_info("Git checkpoints:")
         result = subprocess.run(
             ["git", "log", "--oneline", "-5"],
             capture_output=True,
             text=True
         )
         if result.returncode == 0 and result.stdout:
-            print(result.stdout.strip())
+            _console.print_message(result.stdout.strip())
         else:
-            print("No checkpoints yet")
+            _console.print_info("No checkpoints yet")
 
 
 def clean_workspace():
     """Clean Ralph workspace."""
-    print("Cleaning Ralph workspace...")
-    
+    _console.print_status("Cleaning Ralph workspace...")
+
     # Ask about .agent directory
     response = input("Remove .agent directory? (y/N) ")
     if response.lower() == 'y':
         if Path(".agent").exists():
             shutil.rmtree(".agent")
-            print("Removed .agent directory")
-    
+            _console.print_success("Removed .agent directory")
+
     # Ask about git reset
     if Path(".git").exists():
         response = input("Reset git to last checkpoint? (y/N) ")
         if response.lower() == 'y':
             subprocess.run(["git", "reset", "--hard", "HEAD"], capture_output=True)
-            print("Reset to last checkpoint")
+            _console.print_success("Reset to last checkpoint")
 
 
 def generate_prompt(rough_ideas: List[str], output_file: str = "PROMPT.md", interactive: bool = False, agent: str = "auto"):
     """Generate a structured prompt from rough ideas using AI agent."""
-    
+
     # Collect ideas if interactive mode
     if interactive:
-        print("Enter your rough ideas (one per line, press Enter twice to finish):")
+        _console.print_info("Enter your rough ideas (one per line, press Enter twice to finish):")
         ideas = []
         while True:
             try:
@@ -168,12 +176,12 @@ def generate_prompt(rough_ideas: List[str], output_file: str = "PROMPT.md", inte
                 else:
                     ideas.append(line)
             except KeyboardInterrupt:
-                print("\nCancelled.")
+                _console.print_warning("Cancelled.")
                 return
         rough_ideas = ideas
-    
+
     if not rough_ideas:
-        print("No ideas provided.")
+        _console.print_warning("No ideas provided.")
         return
     
     # Determine the project root and create prompts directory
@@ -195,11 +203,17 @@ def generate_prompt(rough_ideas: List[str], output_file: str = "PROMPT.md", inte
         # Just a filename, put it in prompts directory
         # Look for the project root (where .git is located)
         project_root = current_dir
+        found_git = False
         while project_root.parent != project_root:
             if (project_root / '.git').exists():
+                found_git = True
                 break
             project_root = project_root.parent
-        
+
+        # If no .git found, fall back to current directory
+        if not found_git:
+            project_root = current_dir
+
         # Create prompts directory in project root
         prompts_dir = project_root / 'prompts'
         prompts_dir.mkdir(exist_ok=True)
@@ -209,29 +223,29 @@ def generate_prompt(rough_ideas: List[str], output_file: str = "PROMPT.md", inte
     if output_path.exists():
         response = input(f"{output_path} already exists. Overwrite? (y/N) ")
         if response.lower() != 'y':
-            print("Cancelled.")
+            _console.print_warning("Cancelled.")
             return
-    
-    print("Generating structured prompt using AI...")
-    
+
+    _console.print_status("Generating structured prompt using AI...")
+
     try:
         # Use the specified agent to generate the prompt
         # The agent will create/edit the file directly
         success = generate_prompt_with_agent(rough_ideas, agent, str(output_path))
-        
+
         if success and output_path.exists():
-            print(f"Generated structured prompt: {output_path}")
+            _console.print_success(f"Generated structured prompt: {output_path}")
             # Calculate relative path for the command suggestion
             try:
                 rel_path = output_path.relative_to(current_dir)
-                print(f"You can now run: ralph run -p {rel_path}")
+                _console.print_info(f"You can now run: ralph run -p {rel_path}")
             except ValueError:
-                print(f"You can now run: ralph run -p {output_path}")
+                _console.print_info(f"You can now run: ralph run -p {output_path}")
         else:
-            print(f"Failed to generate prompt. Please check if {output_path} was created.")
-        
+            _console.print_error(f"Failed to generate prompt. Please check if {output_path} was created.")
+
     except Exception as e:
-        print(f"Error generating prompt: {e}")
+        _console.print_error(f"Error generating prompt: {e}")
         return
 
 
@@ -329,8 +343,8 @@ IMPORTANT:
                     return Path(output_file).exists()
         except Exception as e:
             if agent != "auto":
-                print(f"Claude adapter failed: {e}")
-    
+                _console.print_error(f"Claude adapter failed: {e}")
+
     if not success and (agent == "gemini" or agent == "auto"):
         try:
             adapter = GeminiAdapter()
@@ -342,8 +356,8 @@ IMPORTANT:
                     return Path(output_file).exists()
         except Exception as e:
             if agent != "auto":
-                print(f"Gemini adapter failed: {e}")
-    
+                _console.print_error(f"Gemini adapter failed: {e}")
+
     if not success and (agent == "qchat" or agent == "auto"):
         try:
             adapter = QChatAdapter()
@@ -355,7 +369,7 @@ IMPORTANT:
                     return Path(output_file).exists()
         except Exception as e:
             if agent != "auto":
-                print(f"QChat adapter failed: {e}")
+                _console.print_error(f"QChat adapter failed: {e}")
     
     # If no adapter succeeded, return False
     return False
@@ -451,9 +465,16 @@ Examples:
         )
         
         p.add_argument(
-            "-p", "--prompt",
+            "-P", "--prompt-file",
             default=DEFAULT_PROMPT_FILE,
+            dest="prompt",
             help=f"Prompt file (default: {DEFAULT_PROMPT_FILE})"
+        )
+
+        p.add_argument(
+            "-p", "--prompt-text",
+            default=None,
+            help="Direct prompt text (overrides --prompt-file)"
         )
         
         p.add_argument(
@@ -627,13 +648,14 @@ Examples:
             if hasattr(args, 'dry_run') and args.dry_run:
                 config.dry_run = args.dry_run
         except Exception as e:
-            print(f"Error loading config file: {e}")
+            _console.print_error(f"Error loading config file: {e}")
             sys.exit(1)
     else:
         # Create config from CLI arguments
         config = RalphConfig(
             agent=agent_map[args.agent],
             prompt_file=args.prompt,
+            prompt_text=args.prompt_text,
             max_iterations=args.max_iterations,
             max_runtime=args.max_runtime,
             checkpoint_interval=args.checkpoint_interval,
@@ -652,55 +674,73 @@ Examples:
             allow_unsafe_paths=args.allow_unsafe_paths,
             agent_args=args.agent_args if hasattr(args, 'agent_args') else []
         )
-    
+
+    # Validate prompt source exists and has content (before dry-run check)
+    if config.prompt_text is not None:
+        # Validate prompt_text is not empty or whitespace-only
+        if not config.prompt_text.strip():
+            _console.print_error("Prompt text cannot be empty or whitespace-only")
+            _console.print_info("Please provide actual task text with --prompt-text")
+            _console.print_info("Or use --prompt-file to load from a file")
+            sys.exit(1)
+    else:
+        # Validate prompt file exists
+        prompt_path = Path(config.prompt_file)
+        if not prompt_path.exists():
+            _console.print_error(f"Prompt file '{config.prompt_file}' not found")
+            _console.print_info("Please create a PROMPT.md file with your task description.")
+            _console.print_info("Or use --prompt-text to provide a prompt directly.")
+            _console.print_info("Example content:")
+            _console.print_message("""---
+# Task: Build a simple web server
+
+## Requirements
+- Use Python
+- Include basic routing
+- Add tests
+---""")
+            sys.exit(1)
+
     if config.dry_run:
-        print("Dry run mode - no tools will be executed")
-        print("Configuration:")
-        print(f"  Prompt: {config.prompt_file}")
-        print(f"  Agent: {config.agent.value}")
-        print(f"  Max iterations: {config.max_iterations}")
-        print(f"  Max runtime: {config.max_runtime}s")
-        print(f"  Max cost: ${config.max_cost:.2f}")
+        _console.print_info("Dry run mode - no tools will be executed")
+        _console.print_info("Configuration:")
+        if config.prompt_text:
+            preview = config.prompt_text[:100] + "..." if len(config.prompt_text) > 100 else config.prompt_text
+            _console.print_info(f"  Prompt text: {preview}")
+        else:
+            _console.print_info(f"  Prompt file: {config.prompt_file}")
+        _console.print_info(f"  Agent: {config.agent.value}")
+        _console.print_info(f"  Max iterations: {config.max_iterations}")
+        _console.print_info(f"  Max runtime: {config.max_runtime}s")
+        _console.print_info(f"  Max cost: ${config.max_cost:.2f}")
         sys.exit(0)
-    
-    # Validate prompt file exists
-    prompt_path = Path(config.prompt_file)
-    if not prompt_path.exists():
-        print(f"Error: Prompt file '{config.prompt_file}' not found")
-        print("\nPlease create a PROMPT.md file with your task description.")
-        print("Example content:")
-        print("---")
-        print("# Task: Build a simple web server")
-        print("")
-        print("## Requirements")
-        print("- Use Python")
-        print("- Include basic routing")
-        print("- Add tests")
-        print("---")
-        sys.exit(1)
     
     try:
         # Create and run orchestrator
-        print("Starting Ralph Orchestrator...")
-        print(f"Agent: {config.agent.value}")
-        print(f"Prompt: {config.prompt_file}")
-        print(f"Max iterations: {config.max_iterations}")
-        print("Press Ctrl+C to stop gracefully")
-        print("=" * 50)
-        
-        # Convert RalphConfig to individual parameters for the proper orchestrator
+        _console.print_header("Starting Ralph Orchestrator")
+        _console.print_info(f"Agent: {config.agent.value}")
+        if config.prompt_text:
+            preview = config.prompt_text[:80] + "..." if len(config.prompt_text) > 80 else config.prompt_text
+            _console.print_info(f"Prompt: (text) {preview}")
+        else:
+            _console.print_info(f"Prompt: {config.prompt_file}")
+        _console.print_info(f"Max iterations: {config.max_iterations}")
+        _console.print_info("Press Ctrl+C to stop gracefully")
+        _console.print_separator()
+
         # Map CLI agent names to orchestrator tool names
         agent_name = config.agent.value if hasattr(config.agent, 'value') else str(config.agent)
         tool_name_map = {
             "q": "qchat",
-            "claude": "claude", 
+            "claude": "claude",
             "gemini": "gemini",
             "auto": "auto"
         }
         primary_tool = tool_name_map.get(agent_name, agent_name)
-        
+
+        # Pass full config to orchestrator so prompt_text is available
         orchestrator = RalphOrchestrator(
-            prompt_file_or_config=config.prompt_file,
+            prompt_file_or_config=config,
             primary_tool=primary_tool,
             max_iterations=config.max_iterations,
             max_runtime=config.max_runtime,
@@ -709,24 +749,24 @@ Examples:
             checkpoint_interval=config.checkpoint_interval,
             verbose=config.verbose
         )
-        
+
         # Enable all tools for Claude adapter (including WebSearch)
         if primary_tool == 'claude' and 'claude' in orchestrator.adapters:
             claude_adapter = orchestrator.adapters['claude']
             claude_adapter.configure(enable_all_tools=True, enable_web_search=True)
             if config.verbose:
-                print("✓ Claude configured with all native tools including WebSearch")
-        
+                _console.print_success("Claude configured with all native tools including WebSearch")
+
         orchestrator.run()
-        
-        print("=" * 50)
-        print("Ralph Orchestrator completed successfully")
-        
+
+        _console.print_separator()
+        _console.print_success("Ralph Orchestrator completed successfully")
+
     except KeyboardInterrupt:
-        print("\nReceived interrupt signal, shutting down gracefully...")
+        _console.print_warning("Received interrupt signal, shutting down gracefully...")
         sys.exit(0)
     except Exception as e:
-        print(f"Error: {e}")
+        _console.print_error(f"Error: {e}")
         if config.verbose:
             import traceback
             traceback.print_exc()
