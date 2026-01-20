@@ -50,8 +50,8 @@ impl Widget for ContentPane<'_> {
         // Get visible lines from the buffer (now returns owned Vec due to interior mutability)
         let visible = self.buffer.visible_lines(area.height as usize);
 
-        for (row_idx, line) in visible.iter().enumerate() {
-            let y = area.y + row_idx as u16;
+        let mut y = area.y;
+        for line in &visible {
             if y >= area.y + area.height {
                 break;
             }
@@ -63,18 +63,42 @@ impl Widget for ContentPane<'_> {
                 line.clone()
             };
 
-            // Render the line into the buffer
+            // Render the line into the buffer with soft wrapping
             let mut x = area.x;
             for span in &rendered_line.spans {
                 let content = span.content.as_ref();
                 for ch in content.chars() {
+                    // Soft wrap: when we reach the edge, move to next row
                     if x >= area.x + area.width {
-                        break;
+                        y += 1;
+                        x = area.x;
+                        // Stop if we've filled the viewport
+                        if y >= area.y + area.height {
+                            return;
+                        }
                     }
                     buf[(x, y)].set_char(ch).set_style(span.style);
                     x += 1;
                 }
             }
+
+            // Clear remaining cells on this row after the line content
+            while x < area.x + area.width {
+                buf[(x, y)].set_char(' ').set_style(Style::default());
+                x += 1;
+            }
+
+            // Move to the next row for the next logical line
+            y += 1;
+        }
+
+        // Clear remaining rows below the content to prevent artifacts
+        // when switching to an iteration with fewer lines
+        while y < area.y + area.height {
+            for x in area.x..area.x + area.width {
+                buf[(x, y)].set_char(' ').set_style(Style::default());
+            }
+            y += 1;
         }
     }
 }
@@ -450,16 +474,80 @@ mod tests {
     }
 
     #[test]
-    fn widget_truncates_lines_to_area_width() {
+    fn widget_wraps_lines_at_area_width() {
         let mut buffer = IterationBuffer::new(1);
         buffer.append_line(Line::from(
             "this is a very long line that exceeds the width",
         ));
 
-        // Render with narrow width
-        let lines = render_content_pane(&buffer, None, 20, 1);
+        // Render with narrow width and enough height for wrapping
+        let lines = render_content_pane(&buffer, None, 20, 3);
 
-        // Line should be truncated to 20 chars
-        assert_eq!(lines[0].len(), 20, "line should be truncated to area width");
+        // First row should have first 20 chars
+        assert!(
+            lines[0].starts_with("this is a very long "),
+            "first row should have first 20 chars, got: {:?}",
+            lines[0]
+        );
+        // Second row should have continuation
+        assert!(
+            lines[1].starts_with("line that exceeds th"),
+            "second row should have continuation, got: {:?}",
+            lines[1]
+        );
+        // Third row should have the rest
+        assert!(
+            lines[2].starts_with("e width"),
+            "third row should have remaining text, got: {:?}",
+            lines[2]
+        );
+    }
+
+    // =========================================================================
+    // Acceptance Criteria 6: Buffer Clearing (Artifact Prevention)
+    // =========================================================================
+
+    #[test]
+    fn clears_remaining_rows_when_content_shorter_than_viewport() {
+        // Given a pre-filled ratatui buffer (simulating previous frame's content)
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+
+        // Pre-fill the buffer with "X" characters to simulate previous iteration content
+        for y in 0..10 {
+            for x in 0..40 {
+                buf[(x, y)].set_char('X');
+            }
+        }
+
+        // And an IterationBuffer with only 3 lines
+        let mut iter_buffer = IterationBuffer::new(1);
+        iter_buffer.append_line(Line::from("line one"));
+        iter_buffer.append_line(Line::from("line two"));
+        iter_buffer.append_line(Line::from("line three"));
+
+        // When ContentPane renders (only 3 lines of content)
+        let widget = ContentPane::new(&iter_buffer);
+        widget.render(area, &mut buf);
+
+        // Then rows 0-2 should have the content
+        assert!(
+            buf[(0, 0)].symbol() == "l",
+            "row 0 should have content, got: {}",
+            buf[(0, 0)].symbol()
+        );
+
+        // And rows 3-9 should be cleared (no 'X' artifacts)
+        for y in 3..10 {
+            for x in 0..40 {
+                let symbol = buf[(x, y)].symbol();
+                assert!(
+                    symbol != "X",
+                    "row {} col {} should be cleared, but found artifact 'X'",
+                    y,
+                    x
+                );
+            }
+        }
     }
 }
