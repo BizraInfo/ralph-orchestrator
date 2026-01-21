@@ -208,7 +208,9 @@ enum Commands {
     /// Run the orchestration loop (default if no subcommand given)
     Run(RunArgs),
 
-    /// Resume a previously interrupted loop from existing scratchpad
+    /// DEPRECATED: Use `ralph run --continue` instead.
+    /// Resume a previously interrupted loop from existing scratchpad.
+    #[command(hide = true)]
     Resume(ResumeArgs),
 
     /// View event history for debugging
@@ -274,6 +276,12 @@ struct RunArgs {
     /// Dry run - show what would be executed without running
     #[arg(long)]
     dry_run: bool,
+
+    /// Continue from existing scratchpad (resume interrupted loop).
+    /// Use this when a previous run was interrupted and you want to
+    /// continue from where it left off.
+    #[arg(long = "continue")]
+    continue_mode: bool,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Execution Mode Options
@@ -363,7 +371,7 @@ struct EventsArgs {
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
     format: OutputFormat,
 
-    /// Path to events file (default: .agent/events.jsonl)
+    /// Path to events file (default: auto-detects current run)
     #[arg(long)]
     file: Option<PathBuf>,
 
@@ -398,8 +406,8 @@ struct EmitArgs {
     #[arg(long)]
     pub ts: Option<String>,
 
-    /// Path to events file (defaults to .agent/events.jsonl)
-    #[arg(long, default_value = ".agent/events.jsonl")]
+    /// Path to events file (defaults to .ralph/events.jsonl)
+    #[arg(long, default_value = ".ralph/events.jsonl")]
     pub file: PathBuf,
 }
 
@@ -490,6 +498,7 @@ async fn main() -> Result<()> {
                 max_iterations: None,
                 completion_promise: None,
                 dry_run: false,
+                continue_mode: false,
                 tui: false,
                 autonomous: false,
                 idle_timeout: None,
@@ -519,6 +528,23 @@ async fn run_command(
 
     // Normalize v1 flat fields into v2 nested structure
     config.normalize();
+
+    // Handle --continue mode: check scratchpad exists before proceeding
+    let resume = args.continue_mode;
+    if resume {
+        let scratchpad_path = std::path::Path::new(&config.core.scratchpad);
+        if !scratchpad_path.exists() {
+            anyhow::bail!(
+                "Cannot continue: scratchpad not found at '{}'. \
+                 Start a fresh run with `ralph run`.",
+                config.core.scratchpad
+            );
+        }
+        info!(
+            "Found existing scratchpad at '{}', continuing from previous state",
+            config.core.scratchpad
+        );
+    }
 
     // Apply CLI overrides (after normalization so they take final precedence)
     // Per spec: CLI -p and -P are mutually exclusive (enforced by clap)
@@ -623,9 +649,10 @@ async fn run_command(
     // Run the orchestration loop and exit with proper exit code
     let enable_tui = args.tui;
     let verbosity = Verbosity::resolve(verbose || args.verbose, args.quiet);
-    let reason = run_loop(
+    let reason = run_loop_impl(
         config,
         color_mode,
+        resume,
         enable_tui,
         verbosity,
         args.record_session,
@@ -643,8 +670,10 @@ async fn run_command(
 
 /// Resume a previously interrupted loop from existing scratchpad.
 ///
+/// DEPRECATED: Use `ralph run --continue` instead.
+///
 /// Per spec: "When loop terminates due to safeguard (not completion promise),
-/// user can run `ralph resume` to restart reading existing scratchpad,
+/// user can run `ralph run --continue` to restart reading existing scratchpad,
 /// continuing from where it left off."
 async fn resume_command(
     config_path: PathBuf,
@@ -652,6 +681,13 @@ async fn resume_command(
     color_mode: ColorMode,
     args: ResumeArgs,
 ) -> Result<()> {
+    // Show deprecation warning
+    eprintln!(
+        "{}warning:{} `ralph resume` is deprecated. Use `ralph run --continue` instead.",
+        colors::YELLOW,
+        colors::RESET
+    );
+
     // Load configuration
     let mut config = if config_path.exists() {
         RalphConfig::from_file(&config_path)
@@ -667,12 +703,16 @@ async fn resume_command(
     let scratchpad_path = std::path::Path::new(&config.core.scratchpad);
     if !scratchpad_path.exists() {
         anyhow::bail!(
-            "Cannot resume: scratchpad not found at '{}'. Use `ralph run` to start a new loop.",
+            "Cannot continue: scratchpad not found at '{}'. \
+             Start a fresh run with `ralph run`.",
             config.core.scratchpad
         );
     }
 
-    info!("Found existing scratchpad at '{}'", config.core.scratchpad);
+    info!(
+        "Found existing scratchpad at '{}', continuing from previous state",
+        config.core.scratchpad
+    );
 
     // Apply CLI overrides
     if let Some(max_iter) = args.max_iterations {
@@ -832,9 +872,13 @@ fn init_command(color_mode: ColorMode, args: InitArgs) -> Result<()> {
 fn events_command(color_mode: ColorMode, args: EventsArgs) -> Result<()> {
     let use_colors = color_mode.should_use_colors();
 
+    // Read events path from marker file, fall back to default if marker doesn't exist
+    // This ensures `ralph events` reads from the same events file as the active run
     let history = match args.file {
         Some(path) => EventHistory::new(path),
-        None => EventHistory::default_path(),
+        None => fs::read_to_string(".ralph/current-events")
+            .map(|s| EventHistory::new(s.trim()))
+            .unwrap_or_else(|_| EventHistory::default_path()),
     };
 
     // Handle clear command
@@ -1022,8 +1066,14 @@ fn emit_command(color_mode: ColorMode, args: EmitArgs) -> Result<()> {
         "ts": ts
     });
 
+    // Read events path from marker file, fall back to CLI arg if marker doesn't exist
+    // This ensures `ralph emit` writes to the same events file as the active run
+    let events_file = fs::read_to_string(".ralph/current-events")
+        .map(|s| PathBuf::from(s.trim()))
+        .unwrap_or_else(|_| args.file.clone());
+
     // Ensure parent directory exists
-    if let Some(parent) = args.file.parent()
+    if let Some(parent) = events_file.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)
@@ -1034,8 +1084,8 @@ fn emit_command(color_mode: ColorMode, args: EmitArgs) -> Result<()> {
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&args.file)
-        .with_context(|| format!("Failed to open events file: {}", args.file.display()))?;
+        .open(&events_file)
+        .with_context(|| format!("Failed to open events file: {}", events_file.display()))?;
 
     // Write as single-line JSON (JSONL format)
     let json_line = serde_json::to_string(&record)?;
@@ -1420,25 +1470,7 @@ fn resolve_prompt_content(event_loop_config: &ralph_core::EventLoopConfig) -> Re
     )
 }
 
-async fn run_loop(
-    config: RalphConfig,
-    color_mode: ColorMode,
-    enable_tui: bool,
-    verbosity: Verbosity,
-    record_session: Option<PathBuf>,
-) -> Result<TerminationReason> {
-    run_loop_impl(
-        config,
-        color_mode,
-        false,
-        enable_tui,
-        verbosity,
-        record_session,
-    )
-    .await
-}
-
-/// Core loop implementation supporting both fresh start and resume modes.
+/// Core loop implementation supporting both fresh start and continue modes.
 ///
 /// `resume`: If true, publishes `task.resume` instead of `task.start`,
 /// signaling the planner to read existing scratchpad rather than doing fresh gap analysis.
@@ -1527,6 +1559,20 @@ async fn run_loop_impl(
     // 4. Config prompt_file (file path)
     // 5. Default PROMPT.md
     let prompt_content = resolve_prompt_content(&config.event_loop)?;
+
+    // For fresh runs (not resume), generate a unique timestamped events file
+    // This prevents stale events from previous runs polluting new runs (issue #82)
+    // The marker file `.ralph/current-events` coordinates path between Ralph and agents
+    if !resume {
+        let run_id = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let events_path = format!(".ralph/events-{}.jsonl", run_id);
+
+        fs::create_dir_all(".ralph").context("Failed to create .ralph directory")?;
+        fs::write(".ralph/current-events", &events_path)
+            .context("Failed to write .ralph/current-events marker file")?;
+
+        debug!("Created events file for this run: {}", events_path);
+    }
 
     // Initialize event loop
     let mut event_loop = EventLoop::new(config.clone());
