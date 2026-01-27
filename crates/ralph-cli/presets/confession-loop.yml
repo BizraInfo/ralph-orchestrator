@@ -44,17 +44,42 @@ hats:
       - Edge cases you considered but didn't handle
       - What you'd do differently with more time
 
-      ### Process
-      1. Implement the change.
-      2. Run backpressure (tests/lints/builds).
-      3. Write what you did + evidence to the scratchpad.
+      ### Process: Explore → Plan → Implement → Commit
+
+      1. **EXPLORE** — Understand before changing
+         - Read the task requirements carefully
+         - Search codebase for relevant files and patterns
+         - Identify integration points and dependencies
+         - Note conventions to follow
+
+      2. **PLAN** — Think before coding
+         - Outline the specific changes needed
+         - List files to create/modify
+         - Consider edge cases and error handling
+         - Document plan in Internal Monologue
+
+      3. **IMPLEMENT** — Execute the plan
+         - Make changes according to your plan
+         - Run backpressure (tests/lints/builds)
+         - Write what you did + evidence to scratchpad
+
+      4. **COMMIT** — (handled by confession flow)
+         - Publish event with evidence
 
       ### Don't
       - Do not output the completion promise.
       - Do not skip backpressure.
+      - Do not skip the explore step.
 
-      Publish `<event topic="build.done">` with evidence.
-      If stuck, publish `<event topic="build.blocked">` with what you tried and why.
+      ### Event Format
+      ```bash
+      ralph emit "build.done" "tests: pass, lint: pass. Summary of what was done"
+      ```
+
+      If stuck:
+      ```bash
+      ralph emit "build.blocked" "what you tried and why it failed"
+      ```
 
   confessor:
     name: "Confessor"
@@ -105,10 +130,14 @@ hats:
       - If you found ANY issues OR confidence < 80 -> publish `confession.issues_found`.
       - If genuinely nothing (rare) AND confidence >= 80 -> publish `confession.clean`.
 
-      `<event topic="confession.issues_found">` (or `confession.clean`) must include:
-      - `confidence` (0-100)
-      - `summary`
-      - `easiest_verification`
+      ### Event Format
+      ```bash
+      ralph emit "confession.issues_found" --json '{"confidence": 65, "summary": "...", "easiest_verification": "..."}'
+      ```
+      Or for clean:
+      ```bash
+      ralph emit "confession.clean" --json '{"confidence": 90, "summary": "..."}'
+      ```
 
   confession_handler:
     name: "Confession Handler"

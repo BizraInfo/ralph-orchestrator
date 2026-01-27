@@ -36,18 +36,24 @@ cargo install ralph-cli
 ## Quick Start
 
 ```bash
-# Initialize with Claude backend
+# 1. Initialize Ralph with your preferred backend
 ralph init --backend claude
 
-# Run with inline prompt
-ralph run -p "Build a REST API with Express.js and TypeScript"
+# 2. Plan your feature (interactive PDD session)
+ralph plan "Add user authentication with JWT"
+# Creates: specs/user-authentication/requirements.md, design.md, implementation-plan.md
 
-# Or use a preset workflow
-ralph init --preset tdd-red-green
-ralph run
+# 3. Implement the feature
+ralph run -p "Implement the feature in specs/user-authentication/"
 ```
 
 Ralph iterates until it outputs `LOOP_COMPLETE` or hits the iteration limit.
+
+For simpler tasks, skip planning and run directly:
+
+```bash
+ralph run -p "Add input validation to the /users endpoint"
+```
 
 ## What is Ralph?
 
@@ -82,7 +88,7 @@ MIT License — See [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - **[Geoffrey Huntley](https://ghuntley.com/ralph/)** — Creator of the Ralph Wiggum technique
-- **[Harper Reed](https://harper.blog/)** — Spec-driven development methodology
+- **[Strands Agents SOP](https://github.com/strands-agents/agent-sop)** — Agent SOP framework
 - **[ratatui](https://ratatui.rs/)** — Terminal UI framework
 
 ---

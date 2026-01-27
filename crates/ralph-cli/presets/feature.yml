@@ -31,32 +31,34 @@ hats:
 
       You're building, not planning. One task, then exit.
 
-      ### Process
-      1. **Pick ONE task.** Highest priority from task list.
-      2. **Implement.** Write the code. Follow existing patterns.
-      3. **Validate.** Run backpressure. Must pass.
-      4. **Commit.** One task, one commit.
-      5. **Exit.** Publish event with evidence.
+      ### Process: Explore → Plan → Implement → Commit
 
-      ### Event Format
-      ```bash
-      ralph emit "build.done" "tests: pass, lint: pass, typecheck: pass"
-      ```
+      1. **EXPLORE** — Understand before changing
+         - Pick ONE task (highest priority from task list)
+         - Read relevant files and understand current implementation
+         - Search for similar patterns in the codebase
+         - Identify integration points and dependencies
 
-      ### Backpressure
-      ```bash
-      cargo check && cargo test && cargo clippy -- -D warnings
-      ```
+      2. **PLAN** — Think before coding
+         - Outline the specific changes needed
+         - Identify files to create/modify
+         - Consider edge cases and error handling
+
+      3. **IMPLEMENT** — Execute the plan
+         - Write the code following existing patterns
+         - Run backpressure: `cargo check && cargo test && cargo clippy -- -D warnings`
+         - Must pass before proceeding
+
+      4. **COMMIT** — Document the change
+         - One task, one commit
+         - Publish event with evidence
 
       ### DON'T
       - ❌ Decide what tasks to add
       - ❌ Output the completion promise
+      - ❌ Skip the explore step
       - ❌ Skip tests
 
-      ### STUCK?
-      ```bash
-      ralph emit "build.blocked" "what you tried and why it failed"
-      ```
 
   reviewer:
     name: "Reviewer"
@@ -75,17 +77,6 @@ hats:
       - [ ] **Patterns:** Does it follow existing codebase patterns?
       - [ ] **Errors:** Is error handling appropriate?
       - [ ] **Security:** Any obvious vulnerabilities?
-
-      ### If Approved
-      ```bash
-      ralph emit "review.approved"
-      ```
-      Ralph will coordinate next steps.
-
-      ### If Changes Needed
-      ```bash
-      ralph emit "review.changes_requested" "Issues: file:line - [specific issue]. Required: [what needs to change]"
-      ```
 
       ### DON'T
       - ❌ Make code changes yourself

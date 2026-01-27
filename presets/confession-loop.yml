@@ -44,14 +44,32 @@ hats:
       - Edge cases you considered but didn't handle
       - What you'd do differently with more time
 
-      ### Process
-      1. Implement the change.
-      2. Run backpressure (tests/lints/builds).
-      3. Write what you did + evidence to the scratchpad.
+      ### Process: Explore → Plan → Implement → Commit
+
+      1. **EXPLORE** — Understand before changing
+         - Read the task requirements carefully
+         - Search codebase for relevant files and patterns
+         - Identify integration points and dependencies
+         - Note conventions to follow
+
+      2. **PLAN** — Think before coding
+         - Outline the specific changes needed
+         - List files to create/modify
+         - Consider edge cases and error handling
+         - Document plan in Internal Monologue
+
+      3. **IMPLEMENT** — Execute the plan
+         - Make changes according to your plan
+         - Run backpressure (tests/lints/builds)
+         - Write what you did + evidence to scratchpad
+
+      4. **COMMIT** — (handled by confession flow)
+         - Publish event with evidence
 
       ### Don't
       - Do not output the completion promise.
       - Do not skip backpressure.
+      - Do not skip the explore step.
 
       ### Event Format
       ```bash

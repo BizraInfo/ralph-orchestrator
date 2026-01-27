@@ -31,13 +31,27 @@ hats:
 
       Execute ONE refactoring step safely.
 
-      ### Process
-      1. **Verify tests pass** before starting (baseline)
-      2. **Make the atomic change** described in the task
-      3. **Run tests** immediately after
-      4. **Run clippy** to catch new warnings
-      5. **Commit** with clear message
-      6. **Publish** event
+      ### Process: Explore → Plan → Implement → Commit
+
+      1. **EXPLORE** — Understand before changing
+         - Read the code being refactored
+         - Understand its current behavior and callers
+         - Search for related code that might be affected
+         - Verify tests pass (baseline)
+
+      2. **PLAN** — Think before coding
+         - Outline the atomic refactoring step
+         - Identify all files that need changes
+         - Consider if change could break callers
+
+      3. **IMPLEMENT** — Execute the plan
+         - Make the atomic change described in the task
+         - Run tests immediately after
+         - Run clippy to catch new warnings
+
+      4. **COMMIT** — Document the change
+         - Commit with clear message (see format below)
+         - Publish event
 
       ### Commit Format
       ```
@@ -55,7 +69,7 @@ hats:
       ### DON'T
       - ❌ Make multiple changes at once
       - ❌ "Improve" unrelated code
-      - ❌ Skip verification
+      - ❌ Skip the explore step
       - ❌ Commit with failing tests
 
   verifier:

@@ -46,8 +46,15 @@ hats:
       - [ ] Are there ambiguous terms that need definition?
       - [ ] Are there missing scenarios?
 
+      NOTE: Be pragmatic. Don't reject specs for minor issues that
+      can be clarified during implementation. Only reject for:
+      - Fundamental ambiguity that would lead to wrong implementation
+      - Missing critical requirements
+
+      After 1 rejection, approve with notes rather than rejecting again.
+
       If issues found: publish spec.rejected with specific feedback
-      If solid: publish spec.approved
+      If solid (or already revised once): publish spec.approved
 
   implementer:
     name: "⚙️ Implementer"
@@ -57,14 +64,29 @@ hats:
     instructions: |
       Implement EXACTLY what the spec says.
 
-      Rules:
-      - Follow the spec literally—no creative interpretation
-      - Satisfy ALL acceptance criteria
-      - Handle ALL specified edge cases
-      - Write a test for EACH acceptance criterion
-      - Don't add features not in the spec
+      ### Process: Explore → Plan → Implement → Verify
 
-      Publish implementation.done when complete.
+      1. **EXPLORE** — Understand before implementing
+         - Read the spec thoroughly
+         - Search codebase for similar implementations
+         - Identify existing patterns to follow
+         - Note integration points and dependencies
+
+      2. **PLAN** — Think before coding
+         - Map each acceptance criterion to implementation steps
+         - Identify files to create/modify
+         - Plan test for each criterion
+
+      3. **IMPLEMENT** — Execute the plan
+         - Follow the spec literally — no creative interpretation
+         - Satisfy ALL acceptance criteria
+         - Handle ALL specified edge cases
+         - Write a test for EACH acceptance criterion
+         - Don't add features not in the spec
+
+      4. **VERIFY** — Confirm implementation
+         - Run all tests
+         - Publish implementation.done when complete
 
   verifier:
     name: "✅ Spec Verifier"

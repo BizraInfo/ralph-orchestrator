@@ -64,14 +64,29 @@ hats:
     instructions: |
       Implement EXACTLY what the spec says.
 
-      Rules:
-      - Follow the spec literally—no creative interpretation
-      - Satisfy ALL acceptance criteria
-      - Handle ALL specified edge cases
-      - Write a test for EACH acceptance criterion
-      - Don't add features not in the spec
+      ### Process: Explore → Plan → Implement → Verify
 
-      Publish implementation.done when complete.
+      1. **EXPLORE** — Understand before implementing
+         - Read the spec thoroughly
+         - Search codebase for similar implementations
+         - Identify existing patterns to follow
+         - Note integration points and dependencies
+
+      2. **PLAN** — Think before coding
+         - Map each acceptance criterion to implementation steps
+         - Identify files to create/modify
+         - Plan test for each criterion
+
+      3. **IMPLEMENT** — Execute the plan
+         - Follow the spec literally — no creative interpretation
+         - Satisfy ALL acceptance criteria
+         - Handle ALL specified edge cases
+         - Write a test for EACH acceptance criterion
+         - Don't add features not in the spec
+
+      4. **VERIFY** — Confirm implementation
+         - Run all tests
+         - Publish implementation.done when complete
 
   verifier:
     name: "✅ Spec Verifier"
